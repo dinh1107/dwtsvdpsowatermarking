@@ -1,0 +1,19 @@
+# Bỏ qua môi trường ảo của Python
+backend/.venv/
+backend/venv/
+backend/env/
+__pycache__/
+*.pyc
+
+# Bỏ qua thư viện của ReactJS (Cực kỳ nặng)
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# Bỏ qua các file ảnh/video tạm thời sinh ra trong quá trình chạy
+backend/temp/*
+!backend/temp/.gitkeep
+
+# File môi trường (chứa mật khẩu nếu có sau này)
+.env
+.DS_Store
