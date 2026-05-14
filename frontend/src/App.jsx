@@ -118,6 +118,7 @@ function App() {
       setNcScore(response.data.nc_score);
     } catch (error) {
       if (error.response?.status === 403) alert(`🚨 TỪ CHỐI TRUY CẬP 🚨\n\n${error.response.data.detail}`);
+      else if (error.response?.status === 412) alert(`🚨 FILE NGHI NGỜ KHÔNG AN TOÀN 🚨\n\n${error.response.data.detail.msg}`);
       else alert("❌ Lỗi kết nối Server!");
     } finally { setIsLoading(false); }
   };

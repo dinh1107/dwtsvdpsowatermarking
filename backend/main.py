@@ -11,9 +11,10 @@ import base64
 import tempfile
 import shutil
 from moviepy import VideoFileClip
+from SecurityCheck import ImageSecurityScanner
 
 app = FastAPI(title="Watermarking DWT-SVD-PSO & Video")
-
+scanner = ImageSecurityScanner()
 # Cấu hình CORS cho ReactJS
 app.add_middleware(
     CORSMiddleware,
@@ -190,10 +191,28 @@ async def process_extraction(
     logo_file: UploadFile = File(...),
     alpha: float = Form(...)
 ):
-    wm_img = cv2.imdecode(np.frombuffer(await watermarked_file.read(), np.uint8), cv2.IMREAD_COLOR)
-    h_img = cv2.imdecode(np.frombuffer(await host_file.read(), np.uint8), cv2.IMREAD_COLOR)
-    l_img_orig = cv2.imdecode(np.frombuffer(await logo_file.read(), np.uint8), cv2.IMREAD_GRAYSCALE)
+    # Đọc dữ liệu từ file upload
+    wm_data = await watermarked_file.read()
+    h_data = await host_file.read()
+    l_data = await logo_file.read()
+    # --- BƯỚC KIỂM TRA BẢO MẬT ---
+    scan_result = scanner.scan_bytes(wm_data, watermarked_file.filename)
     
+    if not scan_result["is_secure"]:
+        
+        raise HTTPException(
+            status_code=412, 
+            detail={
+                "msg": "File ảnh chứa mã độc hoặc dữ liệu bất thường!",
+                "details": scan_result["details"]
+            }
+        )
+  
+    wm_img = cv2.imdecode(np.frombuffer(wm_data, np.uint8), cv2.IMREAD_COLOR)
+    h_img = cv2.imdecode(np.frombuffer(h_data, np.uint8), cv2.IMREAD_COLOR)
+    l_img_orig = cv2.imdecode(np.frombuffer(l_data, np.uint8), cv2.IMREAD_GRAYSCALE)
+    if wm_img is None or h_img is None:
+        raise HTTPException(status_code=400, detail="Không thể đọc định dạng ảnh.")
     orig_logo_h, orig_logo_w = l_img_orig.shape[:2]
     h_adj, w_adj = (h_img.shape[0] // 2) * 2, (h_img.shape[1] // 2) * 2
     h_img = cv2.resize(h_img, (w_adj, h_adj))
