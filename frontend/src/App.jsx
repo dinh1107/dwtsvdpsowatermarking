@@ -118,7 +118,21 @@ function App() {
       setNcScore(response.data.nc_score);
     } catch (error) {
       if (error.response?.status === 403) alert(`🚨 TỪ CHỐI TRUY CẬP 🚨\n\n${error.response.data.detail}`);
-      else if (error.response?.status === 412) alert(`🚨 FILE NGHI NGỜ KHÔNG AN TOÀN 🚨\n\n${error.response.data.detail.msg}`);
+      else if (error.response?.status === 412) { // Hoặc đổi thành 412 nếu bạn đổi status_code ở Backend
+    const errorData = error.response.data;
+    
+    // Gộp các chi tiết mã độc trong mảng details thành các dòng để hiện lên Alert
+    const chiTietMalware = errorData.details && errorData.details.length > 0 
+        ? errorData.details.map(item => `• ${item}`).join('\n')
+        : "Không có chi tiết cụ thể.";
+
+    alert(
+        `🚨 FILE NGHI NGỜ KHÔNG AN TOÀN 🚨\n\n` +
+        `Thông báo: ${errorData.msg}\n` +
+        `Tên tệp: ${errorData.filename}\n\n` +
+        `Dấu hiệu phát hiện:\n${chiTietMalware}`
+    );
+}
       else alert("❌ Lỗi kết nối Server!");
     } finally { setIsLoading(false); }
   };

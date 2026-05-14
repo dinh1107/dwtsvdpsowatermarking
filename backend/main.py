@@ -199,12 +199,14 @@ async def process_extraction(
     scan_result = scanner.scan_bytes(wm_data, watermarked_file.filename)
     
     if not scan_result["is_secure"]:
-        
-        raise HTTPException(
-            status_code=412, 
-            detail={
-                "msg": "File ảnh chứa mã độc hoặc dữ liệu bất thường!",
-                "details": scan_result["details"]
+        # THAY THẾ raise HTTPException BẰNG LỆNH TRẢ VỀ JSONRESPONSE
+        return JSONResponse(
+            status_code=412,
+            content={
+                "error_type": "SECURITY_MALWARE_ALERT",
+                "msg": "Hệ thống phát hiện tệp tin chứa mã thực thi độc hại!",
+                "filename": watermarked_file.filename,
+                "details": scan_result["details"] # Đây là mảng dictionary/list chi tiết lỗi
             }
         )
   
