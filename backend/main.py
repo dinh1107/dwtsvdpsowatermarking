@@ -139,6 +139,66 @@ def fitness_function(alphas, host_b, wm_img):
         costs[i] = -score
     return costs
 
+        
+def inject_lsb_text(img, text="Duoc nhung boi Nhom 2"):
+    """Nhúng chuỗi text vào các bit cuối cùng (LSB) của các pixel đầu tiên trên kênh B"""
+    # Đảm bảo ảnh đầu vào được đưa về kiểu uint8 chuẩn
+    img = img.astype(np.uint8)
+    
+    # Chuyển chuỗi kí tự thành chuỗi bit
+    bits = ''.join(format(ord(c), '08b') for c in text) + '00000000' # Thêm byte kết thúc
+    b_channel = img[:, :, 0].copy().astype(np.uint8) # Ép kiểu uint8 cho kênh B
+    
+    h, w = b_channel.shape
+    bit_idx = 0
+    total_bits = len(bits)
+    
+    for i in range(h):
+        for j in range(w):
+            if bit_idx < total_bits:
+                # Ép kiểu int rõ ràng cho phần tử ma trận trước khi tính toán bit
+                pixel_val = int(b_channel[i, j])
+                b_channel[i, j] = (pixel_val & ~1) | int(bits[bit_idx])
+                bit_idx += 1
+            else:
+                img[:, :, 0] = b_channel
+                return img
+    img[:, :, 0] = b_channel
+    return img
+def extract_lsb_text(img):
+    """Trích xuất chuỗi text từ các bit cuối cùng (LSB) của kênh B"""
+    # Đảm bảo ma trận ảnh truyền vào là số nguyên uint8
+    img = img.astype(np.uint8)
+    b_channel = img[:, :, 0]
+    
+    h, w = b_channel.shape
+    bits = ""
+    current_byte = ""
+    extracted_text = ""
+    
+    for i in range(h):
+        for j in range(w):
+            # Ép kiểu dữ liệu pixel về int thuần túy của Python để lấy bit cuối
+            pixel_val = int(b_channel[i, j])
+            bit = str(pixel_val & 1)
+            current_byte += bit
+            
+            if len(current_byte) == 8:
+                char_code = int(current_byte, 2)
+                if char_code == 0: # Gặp byte kết thúc (Null) thì dừng
+                    return extracted_text
+                # Chỉ nhận các ký tự ASCII hiển thị được hợp lệ
+                if 32 <= char_code <= 126:
+                    extracted_text += chr(char_code)
+                else:
+                    # Nếu gặp ký tự rác quá nhiều (ảnh sạch), tự động dừng sớm
+                    if len(extracted_text) == 0 and len(current_byte) == 8:
+                        return ""
+                current_byte = ""
+                
+                if len(extracted_text) > 30: 
+                    return extracted_text
+    return extracted_text
 # ==========================================
 # API 1: NHÚNG BẢN QUYỀN ẢNH (TRẢ VỀ BASE64)
 # ==========================================
@@ -172,7 +232,7 @@ async def process_embedding(
 
     stego_b, _, _, _ = embed_dwt_svd(b, l_img, final_alpha)
     final_stego = cv2.merge((stego_b, g, r))
-    
+    final_stego = inject_lsb_text(final_stego, "Duoc nhung boi Nhom 2")
     _, buffer = cv2.imencode('.png', final_stego)
     stego_b64 = "data:image/png;base64," + base64.b64encode(buffer).decode('utf-8')
     
@@ -191,7 +251,7 @@ async def process_extraction(
     logo_file: UploadFile = File(...),
     alpha: float = Form(...)
 ):
-    # Đọc dữ liệu từ file upload
+
     wm_data = await watermarked_file.read()
     h_data = await host_file.read()
     l_data = await logo_file.read()
@@ -209,7 +269,7 @@ async def process_extraction(
                 "details": scan_result["details"] # Đây là mảng dictionary/list chi tiết lỗi
             }
         )
-  
+
     wm_img = cv2.imdecode(np.frombuffer(wm_data, np.uint8), cv2.IMREAD_COLOR)
     h_img = cv2.imdecode(np.frombuffer(h_data, np.uint8), cv2.IMREAD_COLOR)
     l_img_orig = cv2.imdecode(np.frombuffer(l_data, np.uint8), cv2.IMREAD_GRAYSCALE)
@@ -238,11 +298,22 @@ async def process_extraction(
     if nc < 0.75:
         raise HTTPException(status_code=403, detail=f"Bằng chứng giả mạo hoặc ảnh đã bị hỏng nặng! NC: {round(nc*100,2)}%")
 
+    # === ĐOẠN TRÍCH XUẤT MÃ HỆ THỐNG NGẦM ===
+    marker_pattern = generate_text_watermark(w_adj // 2, h_adj // 2)
+    nc_system_marker = calculate_nc(marker_pattern, ext_wm)
+    is_from_system_2 = "YES" if nc_system_marker > 0.60 else "NO"
+
+
     ext_wm_final = cv2.resize(ext_wm, (orig_logo_w, orig_logo_h))
     _, buffer = cv2.imencode('.png', ext_wm_final)
     ext_b64 = "data:image/png;base64," + base64.b64encode(buffer).decode('utf-8')
     
-    return JSONResponse({"nc_score": round(nc, 4), "extracted_logo": ext_b64})
+    return JSONResponse({
+        "nc_score": round(nc, 4), 
+        "extracted_logo": ext_b64,
+        "is_from_system_2": is_from_system_2,
+        "marker_nc": round(nc_system_marker, 4)
+    })
 
 # ==========================================
 # API 3: KIỂM THỬ TẤN CÔNG ẢNH
@@ -371,6 +442,28 @@ async def process_video_watermark(
 
     return FileResponse(final_out_path, media_type="video/webm", filename=f"watermarked_{mode}.webm")
 
+# ==========================================
+# API: KIỂM TRA QUÉT NGẦM TRƯỚC KHI NHÚNG
+# ==========================================
+@app.post("/api/kiem-tra-nhung-trung")
+async def check_over_watermarking(host_file: UploadFile = File(...)):
+    try:
+        h_img = cv2.imdecode(np.frombuffer(await host_file.read(), np.uint8), cv2.IMREAD_COLOR)
+        if h_img is None:
+            return JSONResponse(status_code=400, content={"message": "Không thể đọc định dạng ảnh."})
+            
+        # Trích xuất chuỗi chữ giấu trong LSB
+        secret_text = extract_lsb_text(h_img)
+        
+        # Kiểm tra xem có chứa đúng từ khóa của Nhóm 2 không
+        is_already_watermarked = "Duoc nhung boi Nhom 2" in secret_text
+        
+        return JSONResponse({
+            "is_already_watermarked": is_already_watermarked,
+            "secret_text": secret_text
+        })
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e)})
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)

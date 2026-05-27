@@ -17,6 +17,8 @@ function App() {
   const [embedResultImage, setEmbedResultImage] = useState(null);
   const [embeddedBlob, setEmbeddedBlob] = useState(null);
   const [copyrightFileUrl, setCopyrightFileUrl] = useState(null);
+  const [isWatermarkDetected, setIsWatermarkDetected] = useState(false); 
+  const [isCheckingImage, setIsCheckingImage] = useState(false);
   
   // State: Báo cáo Tấn công
   const [attackType, setAttackType] = useState('jpeg');
@@ -26,6 +28,7 @@ function App() {
   // State: Tab Trích xuất
   const [extractResultImage, setExtractResultImage] = useState(null);
   const [ncScore, setNcScore] = useState(null);
+  const [isFromSystem2, setIsFromSystem2] = useState(null);
 
   // State: Tab Video
   const [videoFile, setVideoFile] = useState(null);
@@ -41,7 +44,38 @@ function App() {
   };
 
   // ================= 2. CÁC HÀM XỬ LÝ LOGIC API =================
+  // Tự động quét kiểm tra ảnh ngay khi người dùng chọn file ảnh gốc (CHỨC NĂNG 2)
+  // Lắng nghe và quét kiểm tra khi có đủ cả Ảnh gốc và Logo
+  React.useEffect(() => {
+    const checkImageBeforeEmbedding = async () => {
+      // Chỉ chạy khi người dùng đã tải lên đủ cả 2 file
+      if (!hostFile || !logoFile) {
+        setIsWatermarkDetected(false);
+        return;
+      }
+      
+      setIsCheckingImage(true);
+      const formData = new FormData();
+      formData.append("host_file", hostFile);
+      formData.append("logo_file", logoFile); // Gửi thêm logo lên server
+      
+      try {
+        const response = await axios.post("http://127.0.0.1:8000/api/kiem-tra-nhung-trung", formData);
+        if (response.data.is_already_watermarked) {
+          setIsWatermarkDetected(true);
+          alert(`🛑 CẢNH BÁO: Ảnh này đã được nhúng thủy vân của Nhóm 2 từ trước! (Độ khớp mã ẩn: ${(response.data.nc_score * 100).toFixed(2)}%). Hệ thống khóa chức năng đóng dấu chồng.`);
+        } else {
+          setIsWatermarkDetected(false); 
+        }
+      } catch (error) {
+        console.error("Lỗi quét ngầm ảnh gốc:", error);
+      } finally {
+        setIsCheckingImage(false);
+      }
+    };
 
+    checkImageBeforeEmbedding();
+  }, [hostFile, logoFile]); // Thay đổi mảng dependency ở đây
   // Hàm nhúng Ảnh
   const handleEmbed = async (e) => {
     e.preventDefault();
@@ -116,8 +150,9 @@ function App() {
       const response = await axios.post("http://127.0.0.1:8000/api/trich-xuat", formData);
       setExtractResultImage(response.data.extracted_logo);
       setNcScore(response.data.nc_score);
+      setIsFromSystem2(response.data.is_from_system_2);
     } catch (error) {
-      if (error.response?.status === 403) alert(`🚨 TỪ CHỐI TRUY CẬP 🚨\n\n${error.response.data.detail}`);
+      if (error.response?.status === 403) alert(` TỪ CHỐI TRUY CẬP \n\n${error.response.data.detail}`);
       else if (error.response?.status === 412) { // Hoặc đổi thành 412 nếu bạn đổi status_code ở Backend
     const errorData = error.response.data;
     
@@ -127,13 +162,13 @@ function App() {
         : "Không có chi tiết cụ thể.";
 
     alert(
-        `🚨 FILE NGHI NGỜ KHÔNG AN TOÀN 🚨\n\n` +
+        ` FILE NGHI NGỜ KHÔNG AN TOÀN \n\n` +
         `Thông báo: ${errorData.msg}\n` +
         `Tên tệp: ${errorData.filename}\n\n` +
         `Dấu hiệu phát hiện:\n${chiTietMalware}`
     );
 }
-      else alert("❌ Lỗi kết nối Server!");
+      else alert(" Lỗi kết nối Server!");
     } finally { setIsLoading(false); }
   };
 
@@ -153,7 +188,7 @@ function App() {
     try {
       const response = await axios.post("http://127.0.0.1:8000/api/nhung-video", formData, { responseType: 'blob' });
       setVideoResultUrl(URL.createObjectURL(response.data));
-    } catch (error) { alert("❌ Lỗi xử lý Video! Thời gian xử lý có thể lâu gây Timeout."); } finally { setIsLoading(false); }
+    } catch (error) { alert(" Lỗi xử lý Video! Thời gian xử lý có thể lâu gây Timeout."); } finally { setIsLoading(false); }
   };
 
   // ================= 3. RENDER UI =================
@@ -179,7 +214,7 @@ function App() {
           {/* FILE UPLOAD (Thay đổi theo Tab) */}
           {activeTab !== 'video' ? (
             <div className="form-group">
-              <label>🖼️ Ảnh Nghệ Thuật Gốc</label>
+              <label> Ảnh Nghệ Thuật Gốc</label>
               <input type="file" accept="image/*" onChange={(e) => setHostFile(e.target.files[0])} />
             </div>
           ) : (
@@ -196,7 +231,7 @@ function App() {
           
           {activeTab === 'extract' && (
             <div className="form-group" style={{border: '1px dashed #e74c3c', padding: '10px', borderRadius: '8px'}}>
-              <label style={{color: '#e74c3c'}}>🚨 Ảnh bị nghi ngờ ăn cắp</label>
+              <label style={{color: '#e74c3c'}}> Ảnh bị nghi ngờ ăn cắp</label>
               <input type="file" accept="image/*" onChange={(e) => setSuspectFile(e.target.files[0])} />
             </div>
           )}
@@ -214,10 +249,23 @@ function App() {
               <div className="form-group">
                 <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', color: '#4338ca', fontWeight: 'bold' }}>
                   <input type="checkbox" checked={usePSO} onChange={(e) => setUsePSO(e.target.checked)} style={{ marginRight: '10px', width: '18px', height: '18px' }}/>
-                  🤖 Bật PSO tự động tìm Alpha
+                   Bật PSO tự động tìm Alpha
                 </label>
               </div>
-              <button onClick={handleEmbed} className="btn-primary" disabled={isLoading}>{isLoading ? "⏳ Đang chạy thuật toán..." : "🚀 Bắt Đầu Đóng Dấu"}</button>
+              <button 
+                onClick={handleEmbed} 
+                className="btn-primary" 
+                disabled={isLoading || isCheckingImage || isWatermarkDetected}
+                style={{
+                  backgroundColor: isWatermarkDetected ? "#9ca3af" : "#3b82f6", 
+                  cursor: isWatermarkDetected ? "not-allowed" : "pointer",
+                  transition: "0.3s"
+                }}
+              >
+                {isCheckingImage ? "⏳ Đang quét ngầm dấu vết..." : 
+                 isLoading ? "⏳ Đang chạy thuật toán..." : 
+                 isWatermarkDetected ? "Ảnh Đã Có Thủy Vân (Khóa)" : " Bắt Đầu Đóng Dấu"}
+              </button>
               
               {embeddedBlob && (
                  <div style={{marginTop: '30px', backgroundColor: '#fffbeb', padding: '15px', borderRadius: '8px', border: '1px solid #fcd34d'}}>
@@ -320,9 +368,18 @@ function App() {
                 <div style={{ textAlign: 'center' }}>
                   <img src={extractResultImage} alt="Logo" className="result-image" style={{maxWidth: '256px', backgroundColor: '#000', padding: '10px'}} />
                   {ncScore && (
-                    <div style={{marginTop: '20px', padding: '15px', borderRadius: '8px', backgroundColor: '#d1fae5', border: '1px solid #34d399'}}>
-                      <h3 style={{margin: 0, color: '#065f46'}}>Độ khớp NC: {(ncScore * 100).toFixed(2)}%</h3>
-                      <p style={{margin: '5px 0 0 0', color: '#047857'}}>Bằng chứng hợp lệ, khớp với hồ sơ JSON!</p>
+                    <div style={{marginTop: '20px', padding: '15px', borderRadius: '8px', backgroundColor: '#d1fae5', border: '1px solid #34d399', textAlign: 'left'}}>
+                      <h3 style={{margin: 0, color: '#065f46', textAlign: 'center'}}>Độ khớp Logo (NC): {(ncScore * 100).toFixed(2)}%</h3>
+                      <p style={{margin: '5px 0 10px 0', color: '#047857', textAlign: 'center'}}>Bằng chứng hợp lệ, khớp với hồ sơ JSON!</p>
+                      
+                      {/* Hiển thị kết quả kiểm tra ngầm mã nhận diện chuỗi chữ */}
+                      <div style={{borderTop: '1px dashed #34d399', paddingTop: '10px', marginTop: '10px'}}>
+                        <p style={{margin: 0, fontWeight: 'bold', color: isFromSystem2 === "YES" ? "#1e3a8a" : "#b91c1c"}}>
+                          🕵️ Kết quả quét mã ẩn: {isFromSystem2 === "YES" 
+                            ? "✅ Đã tìm thấy chuỗi nhận diện hệ thống [Duoc nhung boi Nhom 2]" 
+                            : "❌ Không tìm thấy mã ẩn của hệ thống này."}
+                        </p>
+                      </div>
                     </div>
                   )}
                 </div>
