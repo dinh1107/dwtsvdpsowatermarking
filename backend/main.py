@@ -298,11 +298,11 @@ async def process_extraction(
     if nc < 0.75:
         raise HTTPException(status_code=403, detail=f"Bằng chứng giả mạo hoặc ảnh đã bị hỏng nặng! NC: {round(nc*100,2)}%")
 
-    # === ĐOẠN TRÍCH XUẤT MÃ HỆ THỐNG NGẦM ===
-    marker_pattern = generate_text_watermark(w_adj // 2, h_adj // 2)
-    nc_system_marker = calculate_nc(marker_pattern, ext_wm)
-    is_from_system_2 = "YES" if nc_system_marker > 0.60 else "NO"
-
+   
+    # Đọc trực tiếp text ẩn từ bức ảnh nghi ngờ tải lên (b_wm hoặc wm_img)
+    secret_text_in_extract = extract_lsb_text(wm_img)
+    is_from_system_2 = "YES" if "Duoc nhung boi Nhom 2" in secret_text_in_extract else "NO"
+    # ==================================================
 
     ext_wm_final = cv2.resize(ext_wm, (orig_logo_w, orig_logo_h))
     _, buffer = cv2.imencode('.png', ext_wm_final)
@@ -312,7 +312,7 @@ async def process_extraction(
         "nc_score": round(nc, 4), 
         "extracted_logo": ext_b64,
         "is_from_system_2": is_from_system_2,
-        "marker_nc": round(nc_system_marker, 4)
+        "marker_nc": 1.0 if is_from_system_2 == "YES" else 0.0  # Trả về giá trị giả lập để giao diện không lỗi
     })
 
 # ==========================================

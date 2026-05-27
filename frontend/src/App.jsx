@@ -375,9 +375,9 @@ function App() {
                       {/* Hiển thị kết quả kiểm tra ngầm mã nhận diện chuỗi chữ */}
                       <div style={{borderTop: '1px dashed #34d399', paddingTop: '10px', marginTop: '10px'}}>
                         <p style={{margin: 0, fontWeight: 'bold', color: isFromSystem2 === "YES" ? "#1e3a8a" : "#b91c1c"}}>
-                          🕵️ Kết quả quét mã ẩn: {isFromSystem2 === "YES" 
-                            ? "✅ Đã tìm thấy chuỗi nhận diện hệ thống [Duoc nhung boi Nhom 2]" 
-                            : "❌ Không tìm thấy mã ẩn của hệ thống này."}
+                           Kết quả quét mã ẩn: {isFromSystem2 === "YES" 
+                            ? " Đã tìm thấy chuỗi nhận diện hệ thống " 
+                            : " Không tìm thấy mã ẩn của hệ thống này."}
                         </p>
                       </div>
                     </div>
