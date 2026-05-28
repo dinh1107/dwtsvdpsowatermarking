@@ -14,11 +14,24 @@ import uuid
 import hashlib
 import random
 from moviepy import VideoFileClip
+<<<<<<< HEAD
 from skimage.metrics import structural_similarity as ssim
 
 app = FastAPI(title="Hệ thống Thủy vân số DWT-SVD-PSO")
 
 # Cấu hình CORS: BẮT BUỘC có expose_headers để ReactJS lấy được mã Hash của Video
+=======
+from SecurityCheck import ImageSecurityScanner
+import hashlib
+from PIL import Image, PngImagePlugin
+import io
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization, hashes
+
+app = FastAPI(title="Watermarking DWT-SVD-PSO & Video")
+scanner = ImageSecurityScanner()
+# Cấu hình CORS cho ReactJS
+>>>>>>> b8fe5804e4ccc2e4a47ec7ca99ccf9555db4f12e
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,7 +41,33 @@ app.add_middleware(
 )
 
 os.makedirs("temp", exist_ok=True)
+PRIVATE_KEY_PATH = "private_key.pem"
+PUBLIC_KEY_PATH = "public_key.pem"
 
+if not os.path.exists(PRIVATE_KEY_PATH) or not os.path.exists(PUBLIC_KEY_PATH):
+    # Sinh cặp khóa 2048-bit nếu chưa có
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    
+    # Lưu Private Key
+    with open(PRIVATE_KEY_PATH, "wb") as f:
+        f.write(private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        ))
+    # Lưu Public Key
+    with open(PUBLIC_KEY_PATH, "wb") as f:
+        f.write(public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        ))
+
+# Nạp khóa vào bộ nhớ RAM để sẵn sàng xử lý
+with open(PRIVATE_KEY_PATH, "rb") as f:
+    SERVER_PRIVATE_KEY = serialization.load_pem_private_key(f.read(), password=None)
+with open(PUBLIC_KEY_PATH, "rb") as f:
+    SERVER_PUBLIC_KEY = serialization.load_pem_public_key(f.read())
 # ==========================================
 # CÁC HÀM BỔ TRỢ & TÍNH TOÁN CHỈ SỐ
 # ==========================================
@@ -146,6 +185,65 @@ def fitness_function(alphas, host_b, wm_img):
         costs[i] = -score
     return costs
 
+def inject_rsa_signature_png(cv2_img):
+    """Bước 1: Tính SHA-256 của pixel -> Bước 2: Ký bằng Private Key -> Bước 3: Nhét vào chunk tEXt"""
+    # Chuyển ảnh cv2 (BGR) sang PIL Image (RGB)
+    pil_img = Image.fromarray(cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB))
+    
+    # 1. Tính mã băm SHA-256 của mảng pixel thô
+    pixel_bytes = pil_img.tobytes()
+    img_hash = hashlib.sha256(pixel_bytes).digest()
+    
+    # 2. Dùng Private Key ký lên mã băm đó (Tạo chữ ký số RSA)
+    signature = SERVER_PRIVATE_KEY.sign(
+        img_hash,
+        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+        hashes.SHA256()
+    )
+    # Chuyển chữ ký số dạng byte sang chuỗi Base64 text để nhét vào chunk văn bản
+    signature_b64_str = base64.b64encode(signature).decode('utf-8')
+    
+    # 3. Đóng gói vào chunk tEXt của PNG với nhãn (Key) tự chọn
+    png_info = PngImagePlugin.PngInfo()
+    png_info.add_text("Nhom2_RSA_Signature", signature_b64_str)
+    
+    # Lưu ảnh ra bộ nhớ đệm (RAM Buffer) dưới dạng định dạng PNG chuẩn
+    buffer = io.BytesIO()
+    pil_img.save(buffer, format="PNG", pnginfo=png_info)
+    
+    return buffer.getvalue()
+
+
+def verify_rsa_signature_png(file_bytes):
+    """Mở file PNG -> Bóc chunk tEXt -> Tính lại SHA-256 pixel -> Dùng Public Key verify"""
+    try:
+        # Mở file PNG từ mảng byte truyền lên
+        pil_img = Image.open(io.BytesIO(file_bytes))
+        
+        # 1. Kiểm tra xem file PNG có chứa chunk tEXt bản quyền của mình không
+        if "Nhom2_RSA_Signature" not in pil_img.info:
+            return {"is_authentic": False }
+            
+        # Bóc chuỗi chữ ký số ra và giải mã từ Base64 về dạng byte thuần
+        signature_b64_str = pil_img.info["Nhom2_RSA_Signature"]
+        signature = base64.b64decode(signature_b64_str)
+        
+        # 2. Tự tính toán lại mã băm SHA-256 của ma trận pixel thực tế hiện tại
+        pixel_bytes = pil_img.tobytes()
+        current_hash = hashlib.sha256(pixel_bytes).digest()
+        
+        # 3. Dùng Public Key giải mã chữ ký số để so khớp toán học với mã băm hiện tại
+        SERVER_PUBLIC_KEY.verify(
+            signature,
+            current_hash,
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+            hashes.SHA256()
+        )
+        return {"is_authentic": True, "reason": "Xác thực thành công! Ảnh chính hãng Nhóm 2 và NGUYÊN VẸN 100%."}
+        
+    except Exception:
+        # Nếu hàm .verify() báo lỗi chứng tỏ mã băm bị lệch -> Pixel ảnh đã bị sửa đổi
+        return {"is_authentic": False, "reason": "CẢNH BÁO: Ảnh đã từng nhúng hệ thống Nhóm 2 nhưng ĐÃ BỊ SỬA ĐỔI / CHỈNH SỬA cấu trúc màu!"}
 # ==========================================
 # API 1: NHÚNG ẢNH
 # ==========================================
@@ -181,12 +279,17 @@ async def process_embedding(
 
     stego_b, _, _, _ = embed_dwt_svd(b, l_img, final_alpha)
     final_stego = cv2.merge((stego_b, g, r))
+    png_file_bytes = inject_rsa_signature_png(final_stego)
     
+<<<<<<< HEAD
     psnr_val = calculate_psnr(h_img, final_stego)
     ssim_val = calculate_ssim(h_img, final_stego)
     
     _, buffer = cv2.imencode('.png', final_stego)
     stego_b64 = "data:image/png;base64," + base64.b64encode(buffer).decode('utf-8')
+=======
+    stego_b64 = "data:image/png;base64," + base64.b64encode(png_file_bytes).decode('utf-8')
+>>>>>>> b8fe5804e4ccc2e4a47ec7ca99ccf9555db4f12e
     
     return JSONResponse({
         "optimized_alpha": round(final_alpha, 4),
@@ -207,6 +310,7 @@ async def process_extraction(
     alpha: float = Form(...),
     original_logo_hash: str = Form(...)
 ):
+<<<<<<< HEAD
     wm_img = cv2.imdecode(np.frombuffer(await watermarked_file.read(), np.uint8), cv2.IMREAD_COLOR)
     h_img = cv2.imdecode(np.frombuffer(await host_file.read(), np.uint8), cv2.IMREAD_COLOR)
     l_img_orig = cv2.imdecode(np.frombuffer(await logo_file.read(), np.uint8), cv2.IMREAD_GRAYSCALE)
@@ -214,6 +318,32 @@ async def process_extraction(
     if generate_image_hash(l_img_orig) != original_logo_hash:
         raise HTTPException(status_code=403, detail="TỪ CHỐI TRUY CẬP: Logo không khớp với hồ sơ gốc.")
 
+=======
+
+    wm_data = await watermarked_file.read()
+    h_data = await host_file.read()
+    l_data = await logo_file.read()
+    # --- BƯỚC KIỂM TRA BẢO MẬT ---
+    scan_result = scanner.scan_bytes(wm_data, watermarked_file.filename)
+    
+    if not scan_result["is_secure"]:
+        # THAY THẾ raise HTTPException BẰNG LỆNH TRẢ VỀ JSONRESPONSE
+        return JSONResponse(
+            status_code=412,
+            content={
+                "error_type": "SECURITY_MALWARE_ALERT",
+                "msg": "Hệ thống phát hiện tệp tin chứa mã thực thi độc hại!",
+                "filename": watermarked_file.filename,
+                "details": scan_result["details"] # Đây là mảng dictionary/list chi tiết lỗi
+            }
+        )
+
+    wm_img = cv2.imdecode(np.frombuffer(wm_data, np.uint8), cv2.IMREAD_COLOR)
+    h_img = cv2.imdecode(np.frombuffer(h_data, np.uint8), cv2.IMREAD_COLOR)
+    l_img_orig = cv2.imdecode(np.frombuffer(l_data, np.uint8), cv2.IMREAD_GRAYSCALE)
+    if wm_img is None or h_img is None:
+        raise HTTPException(status_code=400, detail="Không thể đọc định dạng ảnh.")
+>>>>>>> b8fe5804e4ccc2e4a47ec7ca99ccf9555db4f12e
     orig_logo_h, orig_logo_w = l_img_orig.shape[:2]
     h_adj, w_adj = (h_img.shape[0] // 2) * 2, (h_img.shape[1] // 2) * 2
     h_img = cv2.resize(h_img, (w_adj, h_adj))
@@ -238,11 +368,22 @@ async def process_extraction(
     if nc < 0.75:
         raise HTTPException(status_code=403, detail=f"Bằng chứng giả mạo hoặc hỏng nặng! NC: {round(nc*100,2)}%")
 
+   
+    # Đọc trực tiếp text ẩn từ bức ảnh nghi ngờ tải lên (b_wm hoặc wm_img)
+    rsa_result = verify_rsa_signature_png(wm_data)
+    is_from_system_2 = "YES" if (rsa_result["is_authentic"]) else "NO"
+    # ==================================================
+
     ext_wm_final = cv2.resize(ext_wm, (orig_logo_w, orig_logo_h))
     _, buffer = cv2.imencode('.png', ext_wm_final)
     ext_b64 = "data:image/png;base64," + base64.b64encode(buffer).decode('utf-8')
     
-    return JSONResponse({"nc_score": round(nc, 4), "extracted_logo": ext_b64})
+    return JSONResponse({
+        "nc_score": round(nc, 4), 
+        "extracted_logo": ext_b64,
+        "is_from_system_2": is_from_system_2,
+        "marker_nc": 1.0 if is_from_system_2 == "YES" else 0.0  # Trả về giá trị giả lập để giao diện không lỗi
+    })
 
 # ==========================================
 # API 3: TẤN CÔNG ẢNH
@@ -466,6 +607,42 @@ async def process_video_extraction(
     
     return JSONResponse({"nc_score": round(best_nc, 4), "extracted_logo": ext_b64})
 
+# ==========================================
+# API: KIỂM TRA QUÉT NGẦM TRƯỚC KHI NHÚNG
+# ==========================================
+@app.post("/api/kiem-tra-nhung-trung")
+async def check_over_watermarking(host_file: UploadFile = File(...)):
+    try:
+        file_bytes = await host_file.read()
+        
+        # Quét chữ ký số RSA từ file PNG truyền lên
+        rsa_result = verify_rsa_signature_png(file_bytes)
+        
+        # Trường hợp 1: Ảnh nguyên vẹn 100% của hệ thống -> Khóa nút nhúng
+        if rsa_result["is_authentic"]:
+            return JSONResponse({
+                "is_already_watermarked": True,
+                "status_code": "AUTHENTIC",
+                "message": rsa_result["reason"]
+            })
+            
+        # Trường hợp 2: Có mã hệ thống nhưng giải mã KHÔNG TRÙNG (Ảnh bị cắt ghép, chỉnh sửa)
+        if "SỬA ĐỔI" in rsa_result["reason"]:
+            return JSONResponse({
+                "is_already_watermarked": True, # Vẫn khóa nút nhúng chồng để bảo vệ ảnh
+                "status_code": "TAMPERED_ATTACK",
+                "message": "Ảnh này đã bị sửa đổi so với ban đầu của hệ thống, có thể đã bị tấn công!"
+            })
+
+        # Trường hợp 3: Ảnh sạch hoàn toàn hoặc của bên khác không có chữ ký Nhóm 2
+        return JSONResponse({
+            "is_already_watermarked": False,
+            "status_code": "CLEAN",
+            "message": rsa_result["reason"]
+        })
+        
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e)})
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8001)

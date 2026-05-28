@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 2026-04-23 20:25:45,441 - pyswarms.single.global_best - INFO - Optimize for 10 iters with {'c1': 1.5, 'c2': 1.5, 'w': 0.5}
 2026-04-23 20:27:50,919 - pyswarms.single.global_best - INFO - Optimize for 10 iters with {'c1': 1.5, 'c2': 1.5, 'w': 0.5}
 2026-04-23 20:28:10,612 - pyswarms.single.global_best - INFO - Optimization finished | best cost: -0.9153401866804551, best pos: [0.02079522]
@@ -131,3 +132,5 @@ h11._util.LocalProtocolError: can't handle event type Response when role=SERVER 
 2026-05-28 20:44:09,879 - pyswarms.single.global_best - INFO - Optimization finished | best cost: -0.9238279542706589, best pos: [0.01195264]
 2026-05-28 20:45:48,079 - pyswarms.single.global_best - INFO - Optimize for 8 iters with {'c1': 1.5, 'c2': 1.5, 'w': 0.5}
 2026-05-28 20:45:50,726 - pyswarms.single.global_best - INFO - Optimization finished | best cost: -0.8694222290891449, best pos: [0.10228615]
+=======
+>>>>>>> b8fe5804e4ccc2e4a47ec7ca99ccf9555db4f12e
