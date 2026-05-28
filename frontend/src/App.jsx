@@ -12,14 +12,16 @@ function App() {
   const [suspectFile, setSuspectFile] = useState(null);
   const [alpha, setAlpha] = useState(0.1);
   const [usePSO, setUsePSO] = useState(true);
-
+  const [inputKey, setInputKey] = useState(Date.now());
   // State: Tab Nhúng Ảnh
   const [embedResultImage, setEmbedResultImage] = useState(null);
   const [embeddedBlob, setEmbeddedBlob] = useState(null);
   const [copyrightFileUrl, setCopyrightFileUrl] = useState(null);
   const [isWatermarkDetected, setIsWatermarkDetected] = useState(false); 
   const [isCheckingImage, setIsCheckingImage] = useState(false);
-  
+  const [scanStatus, setScanStatus] = useState('CLEAN'); // Trạng thái quét: CLEAN, AUTHENTIC, TAMPERED_ATTACK
+  const [scanMessage, setScanMessage] = useState('');    // Lưu thông báo chi tiết từ Backend
+
   // State: Báo cáo Tấn công
   const [attackType, setAttackType] = useState('jpeg');
   const [attackIntensity, setAttackIntensity] = useState(50);
@@ -44,28 +46,51 @@ function App() {
   };
 
   // ================= 2. CÁC HÀM XỬ LÝ LOGIC API =================
-  // Tự động quét kiểm tra ảnh ngay khi người dùng chọn file ảnh gốc (CHỨC NĂNG 2)
-  // Lắng nghe và quét kiểm tra khi có đủ cả Ảnh gốc và Logo
   React.useEffect(() => {
     const checkImageBeforeEmbedding = async () => {
-      // Chỉ chạy khi người dùng đã tải lên đủ cả 2 file
-      if (!hostFile || !logoFile) {
+      // CHỈNH SỬA: Chỉ cần có hostFile là tiến hành quét ngay, không bắt buộc có logoFile
+      if (!hostFile) {
         setIsWatermarkDetected(false);
+        setScanStatus('CLEAN');
+        setScanMessage('');
         return;
       }
       
       setIsCheckingImage(true);
       const formData = new FormData();
       formData.append("host_file", hostFile);
-      formData.append("logo_file", logoFile); // Gửi thêm logo lên server
       
       try {
         const response = await axios.post("http://127.0.0.1:8000/api/kiem-tra-nhung-trung", formData);
-        if (response.data.is_already_watermarked) {
+        const backendData = response.data;
+
+        setScanMessage(backendData.message);
+
+        if (backendData.is_already_watermarked) {
           setIsWatermarkDetected(true);
-          alert(`🛑 CẢNH BÁO: Ảnh này đã được nhúng thủy vân của Nhóm 2 từ trước! (Độ khớp mã ẩn: ${(response.data.nc_score * 100).toFixed(2)}%). Hệ thống khóa chức năng đóng dấu chồng.`);
+          
+          // KỊCH BẢN XỬ LÝ KHI ẢNH BỊ CẮT GHÉP / TẤN CÔNG
+          if (backendData.status_code === "TAMPERED_ATTACK") {
+  setScanStatus('TAMPERED_ATTACK');
+  alert(`⚠️ CẢNH BÁO BẢO MẬT:\n${backendData.message}\nHệ thống sẽ tự động chuyển tệp tin này sang xác minh để phân tích .`);
+
+  setSuspectFile(hostFile);
+
+  setHostFile(null); 
+  setInputKey(Date.now());
+
+  setScanMessage('');
+  setIsWatermarkDetected(false);
+
+  
+  setActiveTab('extract');   
+} else {
+            setScanStatus('AUTHENTIC');
+            alert(`🛑 THÔNG BÁO: Ảnh này đã được đóng dấu bản quyền chuẩn của Nhóm 2 và đang nguyên vẹn 100%! Hệ thống khóa chức năng nhúng chồng.`);
+          }
         } else {
           setIsWatermarkDetected(false); 
+          setScanStatus('CLEAN');
         }
       } catch (error) {
         console.error("Lỗi quét ngầm ảnh gốc:", error);
@@ -75,7 +100,7 @@ function App() {
     };
 
     checkImageBeforeEmbedding();
-  }, [hostFile, logoFile]); // Thay đổi mảng dependency ở đây
+  }, [hostFile]); 
   // Hàm nhúng Ảnh
   const handleEmbed = async (e) => {
     e.preventDefault();
@@ -215,7 +240,33 @@ function App() {
           {activeTab !== 'video' ? (
             <div className="form-group">
               <label> Ảnh Nghệ Thuật Gốc</label>
-              <input type="file" accept="image/*" onChange={(e) => setHostFile(e.target.files[0])} />
+              <input 
+              key={inputKey}
+              type="file" 
+              accept="image/*" 
+              onChange={(e) => {
+                // Mỗi khi người dùng click chọn file mới, lập tức dọn sạch các vết thông báo cũ trên UI
+                setScanMessage('');
+                setScanStatus('CLEAN');
+                setIsWatermarkDetected(false);
+
+                // Sau đó mới gán file mới vào state để kích hoạt useEffect quét ngầm
+                setHostFile(e.target.files[0]);
+              }} 
+              />
+              
+              {/* CHÈN THÊM ĐOẠN NÀY ĐỂ HIỂN THỊ DÒNG CHỮ CẢNH BÁO TRỰC QUAN */}
+              {isCheckingImage && <p style={{ color: '#3b82f6', margin: '5px 0 0 0', fontSize: '13px' }}>⏳ Đang check chữ ký số hệ thống...</p>}
+              {scanMessage && (
+                <p style={{ 
+                  color: scanStatus === 'TAMPERED_ATTACK' ? '#ef4444' : (scanStatus === 'AUTHENTIC' ? '#10b981' : '#6b7280'), 
+                  margin: '5px 0 0 0', 
+                  fontSize: '13px',
+                  fontWeight: 'bold' 
+                }}>
+                  {scanStatus === 'TAMPERED_ATTACK' ? '⚠️ ' : '✓ '} {scanMessage}
+                </p>
+              )}
             </div>
           ) : (
             <div className="form-group">
@@ -230,9 +281,29 @@ function App() {
           </div>
           
           {activeTab === 'extract' && (
-            <div className="form-group" style={{border: '1px dashed #e74c3c', padding: '10px', borderRadius: '8px'}}>
-              <label style={{color: '#e74c3c'}}> Ảnh bị nghi ngờ ăn cắp</label>
-              <input type="file" accept="image/*" onChange={(e) => setSuspectFile(e.target.files[0])} />
+            <div className="form-group">
+              <label>Ảnh bị nghi ngờ ăn cắp</label>
+              
+              {suspectFile ? (
+                // Nếu đã có file tự động map sang, hiển thị dạng text thuần gọn gàng, không dùng khung border dị biệt gây vỡ CSS
+                <div className="file-locked-info">
+                  <span>🔒 Đã khóa tệp bị tấn công: <strong>{suspectFile.name}</strong></span>
+                  <button 
+                    type="button"
+                    onClick={() => setSuspectFile(null)}
+                    style={{ marginLeft: '10px', cursor: 'pointer' }} // Chỉ giữ style margin nhỏ để tách nút
+                  >
+                    Thay đổi
+                  </button>
+                </div>
+              ) : (
+                // Nếu chưa có file, hiện input file nguyên bản chuẩn theo CSS hệ thống của bạn
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  onChange={(e) => setSuspectFile(e.target.files[0])} 
+                />
+              )}
             </div>
           )}
 
@@ -255,16 +326,18 @@ function App() {
               <button 
                 onClick={handleEmbed} 
                 className="btn-primary" 
-                disabled={isLoading || isCheckingImage || isWatermarkDetected}
+                disabled={isLoading || isCheckingImage || isWatermarkDetected || scanStatus === 'TAMPERED_ATTACK'}
                 style={{
-                  backgroundColor: isWatermarkDetected ? "#9ca3af" : "#3b82f6", 
+                  backgroundColor: isWatermarkDetected ? "#ef4444" : "#3b82f6", 
                   cursor: isWatermarkDetected ? "not-allowed" : "pointer",
                   transition: "0.3s"
                 }}
               >
-                {isCheckingImage ? "⏳ Đang quét ngầm dấu vết..." : 
-                 isLoading ? "⏳ Đang chạy thuật toán..." : 
-                 isWatermarkDetected ? "Ảnh Đã Có Thủy Vân (Khóa)" : " Bắt Đầu Đóng Dấu"}
+               
+                {isCheckingImage ? " Đang quét ngầm dấu vết..." : 
+                 isLoading ? " Đang chạy thuật toán..." : 
+                 scanStatus === 'TAMPERED_ATTACK' ? "Ảnh Đã Bị Sửa Đổi (Khóa)" :
+                 isWatermarkDetected ? "Ảnh Đã Có Thủy Vân " : " Bắt Đầu Đóng Dấu"}
               </button>
               
               {embeddedBlob && (
@@ -376,8 +449,8 @@ function App() {
                       <div style={{borderTop: '1px dashed #34d399', paddingTop: '10px', marginTop: '10px'}}>
                         <p style={{margin: 0, fontWeight: 'bold', color: isFromSystem2 === "YES" ? "#1e3a8a" : "#b91c1c"}}>
                            Kết quả quét mã ẩn: {isFromSystem2 === "YES" 
-                            ? " Đã tìm thấy chuỗi nhận diện hệ thống " 
-                            : " Không tìm thấy mã ẩn của hệ thống này."}
+                            ? " OK " 
+                            : " Không tìm thấy mã ẩn của ảnh này."}
                         </p>
                       </div>
                     </div>
