@@ -22,3 +22,20 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# Bỏ qua môi trường ảo và bộ nhớ đệm của Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+temp/
+
+# Bỏ qua các file ảnh/video test sinh ra trong quá trình chạy
+*.mp4
+*.jpg
+*.png
+*.json
+
+# Bỏ qua thư viện của ReactJS
+node_modules/
+build/
+.env

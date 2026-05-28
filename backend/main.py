@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import cv2
@@ -10,27 +10,41 @@ import pyswarms as ps
 import base64
 import tempfile
 import shutil
+import uuid
+import hashlib
+import random
 from moviepy import VideoFileClip
+from skimage.metrics import structural_similarity as ssim
 
-app = FastAPI(title="Watermarking DWT-SVD-PSO & Video")
+app = FastAPI(title="Hệ thống Thủy vân số DWT-SVD-PSO")
 
-# Cấu hình CORS cho ReactJS
+# Cấu hình CORS: BẮT BUỘC có expose_headers để ReactJS lấy được mã Hash của Video
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Logo-Hash"] 
 )
 
 os.makedirs("temp", exist_ok=True)
 
 # ==========================================
-# CÁC HÀM TOÁN HỌC BỔ TRỢ
+# CÁC HÀM BỔ TRỢ & TÍNH TOÁN CHỈ SỐ
 # ==========================================
+def generate_image_hash(img_array):
+    _, buffer = cv2.imencode('.png', img_array)
+    return hashlib.sha256(buffer.tobytes()).hexdigest()
+
 def calculate_psnr(img1, img2):
     mse = np.mean((img1.astype(np.float64) - img2.astype(np.float64)) ** 2)
     if mse == 0: return 100.0
     return 20 * math.log10(255.0 / math.sqrt(mse))
+
+def calculate_ssim(img1, img2):
+    if len(img1.shape) == 3:
+        return ssim(img1, img2, channel_axis=2, data_range=255)
+    return ssim(img1, img2, data_range=255)
 
 def calculate_nc(wm1, wm2):
     wm1_flat = wm1.flatten().astype(np.float64)
@@ -39,7 +53,7 @@ def calculate_nc(wm1, wm2):
     return np.dot(wm1_flat, wm2_flat) / den if den != 0 else 0.0
 
 # ==========================================
-# CÁC KỊCH BẢN TẤN CÔNG (ROBUSTNESS)
+# CÁC HÀM TẤN CÔNG ẢNH
 # ==========================================
 def attack_jpeg(img, quality=80):
     _, encimg = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
@@ -97,9 +111,6 @@ def extract_dwt_svd(suspect_img, S_h, U_w, V_w, alpha):
         extracted_wm = (extracted_wm - ex_min) / (ex_max - ex_min) * 255.0
     return np.clip(extracted_wm, 0, 255).astype(np.uint8), S_w_ext
 
-# ==========================================
-# HÀM BỔ TRỢ: NHÚNG HIỆN (VIDEO)
-# ==========================================
 def apply_visible_watermark(frame, logo, position="bottom-right", opacity=0.6):
     fh, fw = frame.shape[:2]
     lh, lw = logo.shape[:2]
@@ -119,9 +130,6 @@ def apply_visible_watermark(frame, logo, position="bottom-right", opacity=0.6):
     frame[y:y+new_lh, x:x+new_lw] = blended
     return frame
 
-# ==========================================
-# GIẢI THUẬT TỐI ƯU HÓA BẦY ĐÀN (PSO)
-# ==========================================
 def fitness_function(alphas, host_b, wm_img):
     n_particles = alphas.shape[0]
     costs = np.zeros(n_particles)
@@ -139,7 +147,7 @@ def fitness_function(alphas, host_b, wm_img):
     return costs
 
 # ==========================================
-# API 1: NHÚNG BẢN QUYỀN ẢNH (TRẢ VỀ BASE64)
+# API 1: NHÚNG ẢNH
 # ==========================================
 @app.post("/api/nhung-thuy-van")
 async def process_embedding(
@@ -149,13 +157,15 @@ async def process_embedding(
     use_pso: bool = Form(False)
 ):
     h_img = cv2.imdecode(np.frombuffer(await host_file.read(), np.uint8), cv2.IMREAD_COLOR)
-    l_img = cv2.imdecode(np.frombuffer(await logo_file.read(), np.uint8), cv2.IMREAD_GRAYSCALE)
+    l_img_raw = cv2.imdecode(np.frombuffer(await logo_file.read(), np.uint8), cv2.IMREAD_GRAYSCALE)
     
+    logo_hash = generate_image_hash(l_img_raw)
+
     h_orig, w_orig = h_img.shape[:2]
     h_adj, w_adj = (h_orig // 2) * 2, (w_orig // 2) * 2
     h_img = cv2.resize(h_img, (w_adj, h_adj))
     k_size_h, k_size_w = h_adj // 2, w_adj // 2
-    l_img = cv2.resize(l_img, (k_size_w, k_size_h))
+    l_img = cv2.resize(l_img_raw, (k_size_w, k_size_h))
     
     b, g, r = cv2.split(h_img)
     final_alpha = alpha
@@ -165,35 +175,45 @@ async def process_embedding(
         proxy_l = cv2.resize(l_img, (128, 128))
         optimizer = ps.single.GlobalBestPSO(n_particles=10, dimensions=1, 
                                             options={'c1': 1.5, 'c2': 1.5, 'w': 0.5}, 
-                                            bounds=(np.array([0.01]), np.array([0.40])))
+                                            bounds=(np.array([0.10]), np.array([0.40])))
         _, best_pos = optimizer.optimize(fitness_function, iters=8, host_b=proxy_b, wm_img=proxy_l)
         final_alpha = float(best_pos[0])
 
     stego_b, _, _, _ = embed_dwt_svd(b, l_img, final_alpha)
     final_stego = cv2.merge((stego_b, g, r))
     
+    psnr_val = calculate_psnr(h_img, final_stego)
+    ssim_val = calculate_ssim(h_img, final_stego)
+    
     _, buffer = cv2.imencode('.png', final_stego)
     stego_b64 = "data:image/png;base64," + base64.b64encode(buffer).decode('utf-8')
     
     return JSONResponse({
         "optimized_alpha": round(final_alpha, 4),
+        "logo_hash": logo_hash,
+        "psnr_score": round(psnr_val, 2),
+        "ssim_score": round(ssim_val, 4),
         "stego_image": stego_b64
     })
 
 # ==========================================
-# API 2: TRÍCH XUẤT ẢNH (TRẢ VỀ BASE64 JSON)
+# API 2: TRÍCH XUẤT ẢNH
 # ==========================================
 @app.post("/api/trich-xuat")
 async def process_extraction(
     watermarked_file: UploadFile = File(...), 
     host_file: UploadFile = File(...),
     logo_file: UploadFile = File(...),
-    alpha: float = Form(...)
+    alpha: float = Form(...),
+    original_logo_hash: str = Form(...)
 ):
     wm_img = cv2.imdecode(np.frombuffer(await watermarked_file.read(), np.uint8), cv2.IMREAD_COLOR)
     h_img = cv2.imdecode(np.frombuffer(await host_file.read(), np.uint8), cv2.IMREAD_COLOR)
     l_img_orig = cv2.imdecode(np.frombuffer(await logo_file.read(), np.uint8), cv2.IMREAD_GRAYSCALE)
-    
+
+    if generate_image_hash(l_img_orig) != original_logo_hash:
+        raise HTTPException(status_code=403, detail="TỪ CHỐI TRUY CẬP: Logo không khớp với hồ sơ gốc.")
+
     orig_logo_h, orig_logo_w = l_img_orig.shape[:2]
     h_adj, w_adj = (h_img.shape[0] // 2) * 2, (h_img.shape[1] // 2) * 2
     h_img = cv2.resize(h_img, (w_adj, h_adj))
@@ -209,13 +229,14 @@ async def process_extraction(
     ext_wm, S_w_ext = extract_dwt_svd(b_wm, S_h, U_w, V_w, alpha)
     
     error_margin = np.mean(np.abs(S_w_ext - S_w_expected))
-    dynamic_threshold = 20.0 / alpha 
+    dynamic_threshold = min(20.0 / alpha, 150.0) 
+    
     if error_margin > dynamic_threshold:
-        raise HTTPException(status_code=403, detail=f"SAI HỆ SỐ ALPHA! Mức năng lượng không khớp ({error_margin:.2f}).")
+        raise HTTPException(status_code=403, detail=f"SAI HỆ SỐ ALPHA! Lỗi năng lượng: {error_margin:.2f}")
 
     nc = calculate_nc(l_img, ext_wm)
     if nc < 0.75:
-        raise HTTPException(status_code=403, detail=f"Bằng chứng giả mạo hoặc ảnh đã bị hỏng nặng! NC: {round(nc*100,2)}%")
+        raise HTTPException(status_code=403, detail=f"Bằng chứng giả mạo hoặc hỏng nặng! NC: {round(nc*100,2)}%")
 
     ext_wm_final = cv2.resize(ext_wm, (orig_logo_w, orig_logo_h))
     _, buffer = cv2.imencode('.png', ext_wm_final)
@@ -224,7 +245,7 @@ async def process_extraction(
     return JSONResponse({"nc_score": round(nc, 4), "extracted_logo": ext_b64})
 
 # ==========================================
-# API 3: KIỂM THỬ TẤN CÔNG ẢNH
+# API 3: TẤN CÔNG ẢNH
 # ==========================================
 @app.post("/api/tan-cong")
 async def process_attack(
@@ -269,87 +290,182 @@ async def process_attack(
     return JSONResponse({"nc_score": round(nc, 4), "attacked_image": att_b64, "extracted_logo": ext_b64})
 
 # ==========================================
-# API 4: NHÚNG VIDEO
+# API 4: NHÚNG VIDEO (KHỐI RỜI RẠC + NGẪU NHIÊN)
 # ==========================================
 @app.post("/api/nhung-video")
 async def process_video_watermark(
+    background_tasks: BackgroundTasks, 
     video_file: UploadFile = File(...),
     logo_file: UploadFile = File(...),
     mode: str = Form("hidden"), 
     position: str = Form("bottom-right"),
     alpha: float = Form(0.1)
 ):
+    logo_bytes = await logo_file.read()
+    l_img_orig_raw = cv2.imdecode(np.frombuffer(logo_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
+    
+    # [CẬP NHẬT]: Tạo mã hash ngay từ đầu
+    logo_hash = generate_image_hash(l_img_orig_raw)
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_vid:
         shutil.copyfileobj(video_file.file, tmp_vid)
         in_path = tmp_vid.name
         
-    l_img = cv2.imdecode(np.frombuffer(await logo_file.read(), np.uint8), cv2.IMREAD_COLOR)
+    l_img = cv2.imdecode(np.frombuffer(logo_bytes, np.uint8), cv2.IMREAD_COLOR)
 
     cap = cv2.VideoCapture(in_path)
     fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # 1. OpenCV TRƯỚC TIÊN XUẤT RA VIDEO "CÂM" (SILENT)
-    silent_out_path = f"temp/silent_{mode}.webm"
-    fourcc = cv2.VideoWriter_fourcc(*'vp80') 
+    width = (orig_width // 2) * 2
+    height = (orig_height // 2) * 2
+    unique_id = uuid.uuid4().hex
+    silent_out_path = f"temp/silent_{mode}_{unique_id}.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
     out = cv2.VideoWriter(silent_out_path, fourcc, fps, (width, height))
 
-    if mode == "hidden":
+    BLOCK_SIZE = (min(256, width, height) // 2) * 2
+    if mode in ["hidden", "dual"]:
         l_img_gray = cv2.cvtColor(l_img, cv2.COLOR_BGR2GRAY)
-        l_img_gray = cv2.resize(l_img_gray, (width // 4, height // 4))
+        l_img_gray = cv2.resize(l_img_gray, (BLOCK_SIZE // 2, BLOCK_SIZE // 2))
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
         
-        if mode == "visible":
-            processed_frame = apply_visible_watermark(frame, l_img, position)
-        else: 
-            b, g, r = cv2.split(frame)
-            stego_b, _, _, _ = embed_dwt_svd(b, l_img_gray, alpha)
-            processed_frame = cv2.merge((stego_b, g, r))
-            
+        frame = cv2.resize(frame, (width, height))
+        processed_frame = frame.copy()
+        
+        if mode == "visible" or mode == "dual":
+            processed_frame = apply_visible_watermark(processed_frame, l_img, position)
+
+        if mode == "hidden" or mode == "dual":
+            if random.random() < 0.30: 
+                b, g, r = cv2.split(processed_frame)
+                start_y = (height - BLOCK_SIZE) // 2
+                start_x = (width - BLOCK_SIZE) // 2
+                block_b = b[start_y : start_y + BLOCK_SIZE, start_x : start_x + BLOCK_SIZE]
+                
+                stego_block, _, _, _ = embed_dwt_svd(block_b, l_img_gray, alpha)
+                b[start_y : start_y + BLOCK_SIZE, start_x : start_x + BLOCK_SIZE] = stego_block
+                
+                processed_frame = cv2.merge((b, g, r))
+                
         out.write(processed_frame)
 
     cap.release()
     out.release()
     
-    # =========================================================
-    # 2. MOVIEPY: BÓC AUDIO TỪ VIDEO GỐC VÀ GHÉP VÀO VIDEO MỚI
-    # =========================================================
-    final_out_path = f"temp/watermarked_{mode}.webm"
-    
+    final_out_path = f"temp/watermarked_{mode}_{unique_id}.mp4"
     try:
-        # Load lại video gốc và video câm
         orig_clip = VideoFileClip(in_path)
         silent_clip = VideoFileClip(silent_out_path)
-
-        # Kiểm tra xem video gốc có âm thanh không
         if orig_clip.audio is not None:
-            # Gắn audio gốc vào video đã xử lý thủy vân
             final_clip = silent_clip.with_audio(orig_clip.audio)
-            
-            # Lưu file cuối cùng ra (dùng chuẩn libvorbis cho âm thanh trên WebM)
-            final_clip.write_videofile(final_out_path, codec="libvpx", audio_codec="libvorbis", logger=None)
+            final_clip.write_videofile(final_out_path, codec="libx264", audio_codec="aac", logger=None)
         else:
-            # Nếu video gốc vốn không có tiếng, chỉ cần đổi tên file
-            shutil.copy(silent_out_path, final_out_path)
-
-        # Đóng tài nguyên
+            silent_clip.write_videofile(final_out_path, codec="libx264", logger=None)
         orig_clip.close()
         silent_clip.close()
-        os.remove(silent_out_path) # Xóa file câm đi cho nhẹ máy
-        
+        os.remove(silent_out_path) 
     except Exception as e:
-        print(f"Lỗi ghép Audio: {e}")
-        # Rủi ro nếu MoviePy lỗi, vẫn trả về video câm để hệ thống không bị sập
         final_out_path = silent_out_path 
 
     os.remove(in_path) 
+    background_tasks.add_task(os.remove, final_out_path)
+    
+    # [CẬP NHẬT]: Truyền custom header chứa mã Hash vào FileResponse
+    custom_headers = {"X-Logo-Hash": logo_hash}
+    return FileResponse(
+        final_out_path, 
+        media_type="video/mp4", 
+        filename=f"watermarked_{mode}.mp4",
+        headers=custom_headers
+    )
 
-    return FileResponse(final_out_path, media_type="video/webm", filename=f"watermarked_{mode}.webm")
+# ==========================================
+# API 5: TRÍCH XUẤT VIDEO (POLLING SIÊU NHANH)
+# ==========================================
+@app.post("/api/trich-xuat-video")
+async def process_video_extraction(
+    suspect_video: UploadFile = File(...), 
+    host_video: UploadFile = File(...),
+    logo_file: UploadFile = File(...),
+    alpha: float = Form(...),
+    original_logo_hash: str = Form(...)
+):
+    l_img_orig = cv2.imdecode(np.frombuffer(await logo_file.read(), np.uint8), cv2.IMREAD_GRAYSCALE)
+    if generate_image_hash(l_img_orig) != original_logo_hash:
+        raise HTTPException(status_code=403, detail="TỪ CHỐI TRUY CẬP: Phát hiện logo giả mạo.")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_s:
+        shutil.copyfileobj(suspect_video.file, tmp_s)
+        vid_s_path = tmp_s.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_h:
+        shutil.copyfileobj(host_video.file, tmp_h)
+        vid_h_path = tmp_h.name
+
+    cap_s = cv2.VideoCapture(vid_s_path)
+    cap_h = cv2.VideoCapture(vid_h_path)
+    
+    orig_width = int(cap_s.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_height = int(cap_s.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    width, height = (orig_width // 2) * 2, (orig_height // 2) * 2
+    
+    BLOCK_SIZE = (min(256, width, height) // 2) * 2
+    l_img = cv2.resize(l_img_orig, (BLOCK_SIZE // 2, BLOCK_SIZE // 2))
+    
+    MAX_FRAMES_TO_CHECK = 180
+    frames_checked = 0
+    best_nc = 0.0
+    best_ext_wm = None
+
+    while cap_s.isOpened() and cap_h.isOpened() and frames_checked < MAX_FRAMES_TO_CHECK:
+        ret_s, frame_s = cap_s.read()
+        ret_h, frame_h = cap_h.read()
+        if not ret_s or not ret_h: break
+        
+        frame_s = cv2.resize(frame_s, (width, height))
+        frame_h = cv2.resize(frame_h, (width, height))
+        
+        b_s, _, _ = cv2.split(frame_s)
+        b_h, _, _ = cv2.split(frame_h)
+        
+        start_y = (height - BLOCK_SIZE) // 2
+        start_x = (width - BLOCK_SIZE) // 2
+        
+        block_b_s = b_s[start_y : start_y + BLOCK_SIZE, start_x : start_x + BLOCK_SIZE]
+        block_b_h = b_h[start_y : start_y + BLOCK_SIZE, start_x : start_x + BLOCK_SIZE]
+        
+        _, S_h, U_w, V_w = embed_dwt_svd(block_b_h, l_img, alpha) 
+        ext_wm, _ = extract_dwt_svd(block_b_s, S_h, U_w, V_w, alpha)
+        
+        nc = calculate_nc(l_img, ext_wm)
+        if nc > best_nc:
+            best_nc = nc
+            best_ext_wm = ext_wm
+            
+        if best_nc > 0.75: 
+            break
+            
+        frames_checked += 1
+
+    cap_s.release()
+    cap_h.release()
+    os.remove(vid_s_path)
+    os.remove(vid_h_path)
+
+    if best_nc < 0.75 or best_ext_wm is None:
+        raise HTTPException(status_code=403, detail=f"Không tìm thấy thủy vân ẩn hợp lệ. NC cao nhất: {round(best_nc*100,2)}%")
+
+    orig_logo_h, orig_logo_w = l_img_orig.shape[:2]
+    ext_wm_final = cv2.resize(best_ext_wm, (orig_logo_w, orig_logo_h))
+    _, buffer = cv2.imencode('.png', ext_wm_final)
+    ext_b64 = "data:image/png;base64," + base64.b64encode(buffer).decode('utf-8')
+    
+    return JSONResponse({"nc_score": round(best_nc, 4), "extracted_logo": ext_b64})
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8001)
