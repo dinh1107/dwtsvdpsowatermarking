@@ -12,7 +12,8 @@ function App() {
   const [suspectFile, setSuspectFile] = useState(null);
   const [alpha, setAlpha] = useState(0.1);
   const [usePSO, setUsePSO] = useState(true);
-  const [inputKey, setInputKey] = useState(Date.now());
+  const [inputKey, setInputKey] = useState(0);
+  const [extractInputKey, setExtractInputKey] = useState(0);
   // State: Tab Nhúng Ảnh
   const [embedResultImage, setEmbedResultImage] = useState(null);
   const [embeddedBlob, setEmbeddedBlob] = useState(null);
@@ -101,6 +102,45 @@ function App() {
 
     checkImageBeforeEmbedding();
   }, [hostFile]); 
+  React.useEffect(() => {
+    const checkImageInsideExtractTab = async () => {
+      // Chỉ chạy bộ quét này nếu đang ở tab Xác minh và người dùng vừa chọn Ảnh gốc
+      if (activeTab !== 'extract' || !hostFile) return;
+
+      setIsCheckingImage(true);
+      const formData = new FormData();
+      formData.append("host_file", hostFile);
+
+      try {
+        const response = await axios.post("http://127.0.0.1:8000/api/kiem-tra-nhung-trung", formData);
+        const backendData = response.data;
+
+        // Nếu Backend quét ra file có dính chữ ký RSA (Dù trạng thái AUTHENTIC hay TAMPERED_ATTACK)
+        if (backendData.is_already_watermarked) {
+          alert(`🔍 Phát hiện dấu vết: Bức ảnh này có chứa mã định danh hệ thống!\nHệ thống sẽ tự động chuyển tệp tin này xuống mục "Ảnh bị nghi ngờ ăn cắp" để tiến hành giải mã toán học.`);
+          
+          // 1. Đẩy file xuống mục suspectFile
+          setSuspectFile(hostFile);
+          
+          // 2. Xóa file ở ô Ảnh gốc đi
+          setHostFile(null);
+          
+          // 3. Ép ô chọn Ảnh gốc ở Tab Xác minh clear trắng giao diện
+          setExtractInputKey(Date.now());
+          
+          // 4. Lưu lại trạng thái scan để đồng bộ thông báo UI nếu cần
+          setScanStatus(backendData.status_code);
+          setScanMessage(backendData.message);
+        }
+      } catch (error) {
+        console.error("Lỗi quét ngầm tại Tab Xác minh:", error);
+      } finally {
+        setIsCheckingImage(false);
+      }
+    };
+
+    checkImageInsideExtractTab();
+  }, [hostFile, activeTab]); // Kích hoạt khi đổi ảnh gốc hoặc đổi tab
   // Hàm nhúng Ảnh
   const handleEmbed = async (e) => {
     e.preventDefault();
@@ -242,6 +282,7 @@ function App() {
               <label> Ảnh Nghệ Thuật Gốc</label>
               <input 
               key={inputKey}
+              key={activeTab === 'embed' ? inputKey : extractInputKey}
               type="file" 
               accept="image/*" 
               onChange={(e) => {
